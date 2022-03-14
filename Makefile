@@ -1,6 +1,10 @@
 .PHONY: all build build-rust build-go test
 
-BUILDERS_PREFIX := line/wasmvm-builder
+# Builds the Rust library libwasmvm
+BUILDERS_PREFIX := cosmwasm/go-ext-builder:0009
+# Contains a full Go dev environment in order to run Go tests on the built library
+ALPINE_TESTER := cosmwasm/go-ext-builder:0009-alpine
+
 USER_ID := $(shell id -u)
 USER_GROUP = $(shell id -g)
 
@@ -53,37 +57,37 @@ test-safety:
 release-build-alpine:
 	rm -rf libwasmvm/target/release
 	# build the muslc *.a file
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX):alpine
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX)-alpine
 	cp libwasmvm/target/release/examples/libstaticlib.a api/libwasmvm_static.a
 	make update-bindings
 	# try running go tests using this lib with muslc
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing $(BUILDERS_PREFIX):alpine go build -tags static .
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing $(BUILDERS_PREFIX):alpine go test -tags 'static mocks' ./api ./types
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/mnt/testrun -w /mnt/testrun $(ALPINE_TESTER) go build -tags static .
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/mnt/testrun -w /mnt/testrun $(ALPINE_TESTER) go test -tags 'static mocks' ./api ./types
 
 # Creates a release build in a containerized build environment of the static library for glibc Linux (.a)
 release-build-linux-static:
 	rm -rf libwasmvm/target/release
 	# build the glibc *.a file
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX):static
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code line/wasmvm-builder:static
 	cp libwasmvm/target/release/examples/libstaticlib.a api/libwasmvm_static.a
 	make update-bindings
 	# try running go tests using this lib with glibc
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing $(BUILDERS_PREFIX):static go build -tags static .
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing $(BUILDERS_PREFIX):static go test -tags='static mocks' ./api ./types
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing line/wasmvm-builder:static go build -tags static .
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing line/wasmvm-builder:static go test -tags='static mocks' ./api ./types
 
 # Creates a release build in a containerized build environment of the shared library for glibc Linux (.so)
 release-build-linux:
 	rm -rf libwasmvm/target/release
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX):centos7
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX)-centos7
 	cp libwasmvm/target/release/deps/libwasmvm.so api
 	make update-bindings
 
 # Creates a release build in a containerized build environment of the shared library for macOS (.dylib)
 release-build-macos:
-	rm -rf libwasmvm/target/release
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX):cross
-	cp libwasmvm/target/x86_64-apple-darwin/release/deps/libwasmvm.dylib api
-	cp libwasmvm/bindings.h api
+	rm -rf libwasmvm/target/x86_64-apple-darwin/release
+	rm -rf libwasmvm/target/aarch64-apple-darwin/release
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd)/libwasmvm:/code $(BUILDERS_PREFIX)-cross build_macos.sh
+	cp libwasmvm/artifacts/libwasmvm.dylib api
 	make update-bindings
 
 update-bindings:
@@ -100,18 +104,19 @@ release-build:
 
 test-alpine: release-build-alpine
 	# build a go binary
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/testing -w /testing $(BUILDERS_PREFIX):alpine go build -tags 'static mocks' -o demo ./cmd
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/mnt/testrun -w /mnt/testrun $(BUILDERS_PREFIX)-alpine go build -tags static -o demo ./cmd
 	# run static binary in an alpine machines (not dlls)
-	docker run --rm --read-only -v $(shell pwd):/testing -w /testing alpine:3.14 ./demo ./api/testdata/hackatom.wasm
-	docker run --rm --read-only -v $(shell pwd):/testing -w /testing alpine:3.13 ./demo ./api/testdata/hackatom.wasm
-	docker run --rm --read-only -v $(shell pwd):/testing -w /testing alpine:3.12 ./demo ./api/testdata/hackatom.wasm
-	docker run --rm --read-only -v $(shell pwd):/testing -w /testing alpine:3.11 ./demo ./api/testdata/hackatom.wasm
+	# See https://de.wikipedia.org/wiki/Alpine_Linux#Versionen for supported versions
+	docker run --rm --read-only -v $(shell pwd):/mnt/testrun -w /mnt/testrun alpine:3.15 ./demo ./api/testdata/hackatom.wasm
+	docker run --rm --read-only -v $(shell pwd):/mnt/testrun -w /mnt/testrun alpine:3.14 ./demo ./api/testdata/hackatom.wasm
+	docker run --rm --read-only -v $(shell pwd):/mnt/testrun -w /mnt/testrun alpine:3.13 ./demo ./api/testdata/hackatom.wasm
+	docker run --rm --read-only -v $(shell pwd):/mnt/testrun -w /mnt/testrun alpine:3.12 ./demo ./api/testdata/hackatom.wasm
 	# run static binary locally if you are on Linux
 	# ./muslc.exe ./api/testdata/hackatom.wasm
 
 test-static: release-build-linux-static
 	# build a go binary
-	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/code -w /code $(BUILDERS_PREFIX):static go build -tags='static mocks' -o static.exe ./cmd
+	docker run --rm -u $(USER_ID):$(USER_GROUP) -v $(shell pwd):/code -w /code line/wasmvm-builder:static go build -tags='static mocks' -o static.exe ./cmd
 	# run static binary in an alpine machines (not dlls)
 	docker run --rm --read-only -v $(shell pwd):/code -w /code centos ./static.exe ./api/testdata/hackatom.wasm
 	# run static binary locally if you are on Linux
